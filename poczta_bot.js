@@ -47,6 +47,11 @@ async function trackPackage(trackingNumber) {
             waitUntil: 'domcontentloaded',
             timeout: 60000
         });
+        // ✅ Выводим текст в лог Railway
+        
+        const pageText = await page.evaluate(() => document.body.innerText).catch(() => 'evaluate failed');
+        console.log('URL:', page.url());
+        console.log('Текст страницы:', pageText.slice(0, 500));
 
         // ✅ Закрываем куки и опрос параллельно
         await Promise.all([
