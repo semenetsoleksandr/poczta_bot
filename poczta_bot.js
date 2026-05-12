@@ -3,7 +3,7 @@ const { Telegraf } = require('telegraf');
 const fs = require('fs');
 const path = require('path');
 
-const bot = new Telegraf('7622281993:AAHAj6ZdHwEmUu4Vjm2OWjJmnceuRRDK1NE');
+const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const logPath = path.join(__dirname, 'bot.log');
 
