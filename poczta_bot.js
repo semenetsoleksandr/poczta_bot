@@ -49,9 +49,8 @@ async function trackPackage(trackingNumber) {
         });
         // ✅ Выводим текст в лог Railway
         
-        const pageText = await page.evaluate(() => document.body.innerText).catch(() => 'evaluate failed');
-        console.log('URL:', page.url());
-        console.log('Текст страницы:', pageText.slice(0, 500));
+        const html = await page.evaluate(() => document.documentElement.innerHTML).catch(() => 'failed');
+        console.log('HTML:', html.slice(0, 1000));
 
         // ✅ Закрываем куки и опрос параллельно
         await Promise.all([
