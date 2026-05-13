@@ -1,162 +1,148 @@
-const puppeteer = require('puppeteer');
 const { Telegraf } = require('telegraf');
-const fs = require('fs');
-const path = require('path');
+const https = require('https');
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-const logPath = path.join(__dirname, 'bot.log');
-
-function logToFile(message) {
-    const timestamp = new Date().toISOString();
-    fs.appendFile(logPath, `[${timestamp}] ${message}\n`, () => {});
+// ================= HTTP GET =================
+function httpGet(url, headers = {}) {
+    return new Promise((resolve, reject) => {
+        const urlObj = new URL(url);
+        const options = {
+            hostname: urlObj.hostname,
+            path: urlObj.pathname + urlObj.search,
+            method: 'GET',
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml',
+                ...headers
+            }
+        };
+        const req = https.request(options, (res) => {
+            let raw = '';
+            res.on('data', chunk => raw += chunk);
+            res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: raw }));
+        });
+        req.on('error', reject);
+        req.end();
+    });
 }
 
-function normalizeTrackingNumber(trackingNumber) {
-    return trackingNumber.toUpperCase().replace(/[^A-Z0-9]/g, '');
+// ================= HTTP POST =================
+function httpPost(url, data, headers = {}) {
+    return new Promise((resolve, reject) => {
+        const body = JSON.stringify(data);
+        const urlObj = new URL(url);
+        const options = {
+            hostname: urlObj.hostname,
+            path: urlObj.pathname,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                'Content-Length': Buffer.byteLength(body),
+                ...headers
+            }
+        };
+        const req = https.request(options, (res) => {
+            let raw = '';
+            res.on('data', chunk => raw += chunk);
+            res.on('end', () => {
+                try { resolve({ status: res.statusCode, headers: res.headers, body: JSON.parse(raw) }); }
+                catch { resolve({ status: res.statusCode, headers: res.headers, body: raw }); }
+            });
+        });
+        req.on('error', reject);
+        req.write(body);
+        req.end();
+    });
 }
 
+// ================= ТРЕКИНГ =================
 async function trackPackage(trackingNumber) {
-    let browser;
+    // Шаг 1: заходим на emonitoring чтобы получить куки и API ключ
+    const homePage = await httpGet('https://emonitoring.poczta-polska.pl/', {
+        'Accept-Language': 'pl-PL,pl;q=0.9'
+    });
 
-    try {
-        browser = await puppeteer.launch({
-            headless: 'new',
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-http2',
-                '--disable-blink-features=AutomationControlled',
-            ]
-        });
+    // Достаём куки
+    const cookies = homePage.headers['set-cookie']
+        ? homePage.headers['set-cookie'].map(c => c.split(';')[0]).join('; ')
+        : '';
 
-        const page = await browser.newPage();
+    // Достаём API ключ из HTML
+    const apiKeyMatch = homePage.body.match(/['"]([\w+=/]{40,})['"]/);
+    const apiKey = apiKeyMatch ? apiKeyMatch[1] : null;
 
-        await page.evaluateOnNewDocument(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        });
+    console.log('Куки:', cookies.slice(0, 50));
+    console.log('API Key найден:', !!apiKey);
+    if (apiKey) console.log('API Key:', apiKey.slice(0, 20) + '...');
 
-        await page.setUserAgent(
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-        );
+    // Шаг 2: делаем запрос к API
+    const result = await httpPost(
+        'https://uss.poczta-polska.pl/uss/v1.1/tracking/checkmailex',
+        { language: 'PL', number: trackingNumber, addPostOfficeInfo: false },
+        {
+            'API_KEY': apiKey || '',
+            'Origin': 'https://emonitoring.poczta-polska.pl',
+            'Referer': 'https://emonitoring.poczta-polska.pl/',
+            'Cookie': cookies,
+            'Accept-Language': 'pl'
+        }
+    );
 
-        await page.setViewport({ width: 1366, height: 768 });
+    console.log('Статус API:', result.status);
+    console.log('Ответ:', JSON.stringify(result.body).slice(0, 200));
 
-        await page.goto('https://www.poczta-polska.pl/sledzenie-przesylek/', {
-            waitUntil: 'domcontentloaded',
-            timeout: 60000
-        });
-        // ✅ Выводим текст в лог Railway
-        
-        const html = await page.evaluate(() => document.documentElement.innerHTML).catch(() => 'failed');
-        console.log('HTML:', html.slice(0, 1000));
-
-        // ✅ Закрываем куки и опрос параллельно
-        await Promise.all([
-            page.waitForSelector('#CybotCookiebotDialogBodyButtonAccept', { timeout: 3000 })
-                .then(el => el.click())
-                .catch(() => {}),
-            page.waitForSelector('.btn-close', { timeout: 3000 })
-                .then(el => el.click())
-                .catch(() => {}),
-        ]);
-
-        // ✅ Ждём поле ввода и вводим номер
-        await page.waitForSelector('input[name*="track"]', { visible: true, timeout: 15000 });
-        const input = await page.$('input[name*="track"]');
-        await input.click({ clickCount: 3 });
-        await input.type(trackingNumber, { delay: 30 });
-
-        logToFile(`Tracking: ${trackingNumber}`);
-
-        // ✅ Кликаем и ждём результат — без waitForNavigation (сайт использует AJAX)
-        await page.click('#trackShipmentSubmit');
-
-        await page.waitForFunction(() => {
-            const text = document.body.innerText;
-            return (
-                text.includes('Status przesyłki') ||
-                text.includes('Nadana') ||
-                text.includes('Doręczona') ||
-                text.includes('W drodze') ||
-                text.includes('Przyjęta') ||
-                text.includes('Brak informacji')
-            );
-        }, { timeout: 30000, polling: 300 });
-
-        // ✅ Собираем данные параллельно
-        const [shipmentInfo, trackingEvents] = await Promise.all([
-            page.evaluate(() => {
-                const rows = document.querySelectorAll('.table-shipment-info__row');
-                let info = '';
-                rows.forEach(row => {
-                    const label = row.querySelector('.label');
-                    const value = row.querySelector('.value');
-                    if (label && value) {
-                        info += `${label.textContent.trim()}: ${value.textContent.trim()}\n`;
-                    }
-                });
-                return info;
-            }),
-            page.evaluate(() => {
-                const events = [];
-                const rows = document.querySelectorAll('.table-tracking-container__row');
-                rows.forEach(row => {
-                    if (!row.classList.contains('head')) {
-                        const event = row.querySelector('.events');
-                        const dateTime = row.querySelector('.date-and-time');
-                        const postOffice = row.querySelector('.post-office');
-                        if (event && dateTime) {
-                            let text = `${event.textContent.trim()} - ${dateTime.textContent.trim()}`;
-                            if (postOffice) {
-                                text += `\nОтделение: ${postOffice.textContent.trim()}`;
-                            }
-                            events.push(text);
-                        }
-                    }
-                });
-                return events;
-            }),
-        ]);
-
-        return { shipmentInfo, trackingEvents };
-
-    } catch (err) {
-        console.error('trackPackage error:', err.message);
-        throw err;
-    } finally {
-        if (browser) await browser.close();
-    }
+    return result.body;
 }
 
-bot.start((ctx) => {
-    ctx.reply('Привет! Отправь номер отслеживания посылки.');
-});
+// ================= ФОРМАТИРОВАНИЕ =================
+function formatResult(data, trackingNumber) {
+    if (!data || !data.mailInfo) {
+        return `❌ Посылка ${trackingNumber} не найдена.`;
+    }
+    const info = data.mailInfo;
+    let message = '';
+    if (info.number) message += `📦 Номер: ${info.number}\n`;
+    if (info.dispatchDate) message += `📅 Отправлена: ${info.dispatchDate.split('T')[0]}\n`;
+    if (info.dispatchCountryName) message += `🌍 Откуда: ${info.dispatchCountryName}\n`;
+    if (info.deliveryDate) message += `✅ Доставлена: ${info.deliveryDate.split('T')[0]}\n`;
+    const events = info.events || [];
+    if (events.length > 0) {
+        message += '\n📋 События:\n\n';
+        events.slice(0, 10).forEach(event => {
+            const date = event.time ? event.time.replace('T', ' ').slice(0, 16) : '';
+            const name = event.name || '';
+            const office = event.postOffice?.name || '';
+            message += `• ${name}`;
+            if (date) message += ` — ${date}`;
+            if (office) message += `\n  📍 ${office}`;
+            message += '\n\n';
+        });
+    } else {
+        message += '\nНет данных о движении посылки.';
+    }
+    return message.trim();
+}
+
+// ================= NORMALIZE =================
+function normalizeTrackingNumber(t) {
+    return t.toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+// ================= BOT =================
+bot.start((ctx) => ctx.reply('Привет! Отправь номер отслеживания посылки.'));
 
 bot.on('text', async (ctx) => {
     const trackingNumber = normalizeTrackingNumber(ctx.message.text.trim());
-
-    // ✅ Принимаем номера только из цифр ИЛИ буквы+цифры, минимум 8 символов
     if (trackingNumber.length < 8) {
         return ctx.reply('Введи корректный номер отслеживания');
     }
-
     await ctx.reply(`🔍 Ищу: ${trackingNumber}...`);
-
     try {
-        const { shipmentInfo, trackingEvents } = await trackPackage(trackingNumber);
-
-        let message = '';
-        if (shipmentInfo) message += shipmentInfo + '\n';
-        message += '\n📦 События:\n\n';
-        message += trackingEvents.length > 0
-            ? trackingEvents.join('\n\n')
-            : 'Нет данных о движении посылки.';
-
-        await ctx.reply(message);
-
+        const data = await trackPackage(trackingNumber);
+        await ctx.reply(formatResult(data, trackingNumber));
     } catch (err) {
+        console.error('Ошибка:', err.message);
         await ctx.reply(`❌ Ошибка при поиске: ${trackingNumber}`);
     }
 });
