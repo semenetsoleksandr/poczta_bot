@@ -40,6 +40,8 @@ bot.on("text", async (ctx) => {
     ctx.reply(result);
 });
 
-bot.launch();
+bot.launch({
+    dropPendingUpdates: true
+});
 
 console.log("BOT STARTED");
