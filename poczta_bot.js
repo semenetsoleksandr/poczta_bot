@@ -1,144 +1,90 @@
 const { Telegraf } = require("telegraf");
+const puppeteer = require("puppeteer");
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// ================= SAFE FETCH =================
-async function fetchWithRetry(url, options = {}, retries = 3) {
-    for (let i = 0; i < retries; i++) {
-        try {
-            const res = await fetch(url, options);
-
-            if (!res.ok) {
-                throw new Error("HTTP " + res.status);
-            }
-
-            return await res.json();
-
-        } catch (err) {
-            console.log(`Retry ${i + 1}/${retries}:`, err.message);
-
-            if (i === retries - 1) {
-                throw err;
-            }
-
-            await new Promise(r => setTimeout(r, 1000 * (i + 1)));
-        }
-    }
-}
-
 // ================= TRACKING =================
 async function trackPocztaPolska(trackingNumber) {
+    let browser;
+
     try {
-        const data = await fetchWithRetry(
-            "https://uss.poczta-polska.pl/uss/v1.1/tracking/checkmailex",
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "API_KEY": process.env.PP_API_KEY
-                },
-                body: JSON.stringify({
-                    language: "PL",
-                    number: trackingNumber,
-                    addPostOfficeInfo: true
-                })
-            }
+        browser = await puppeteer.launch({
+            headless: "new",
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage"
+            ]
+        });
+
+        const page = await browser.newPage();
+
+        await page.setUserAgent(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
         );
 
-        if (!data?.mailInfo) {
-            return {
-                ok: false,
-                error: "Посылка не найдена"
-            };
-        }
+        await page.goto(
+            "https://emonitoring.poczta-polska.pl/",
+            { waitUntil: "networkidle2" }
+        );
 
-        const info = data.mailInfo;
+        // ввод трека
+        await page.type("input", trackingNumber);
+
+        // нажимаем кнопку поиска
+        await page.click("button");
+
+        await page.waitForTimeout(4000);
+
+        // читаем результат
+        const result = await page.evaluate(() => {
+            const status = document.body.innerText;
+            return status;
+        });
 
         return {
             ok: true,
-            number: info.number,
-            status: info.status || "unknown",
-            sendDate: info.dispatchDate,
-            deliveryDate: info.deliveryDate,
-            events: (info.events || []).slice(0, 6).map(e => ({
-                name: e.name,
-                time: e.time,
-                place: e.postOffice?.name
-            }))
+            text: result.slice(0, 1500)
         };
 
     } catch (err) {
-        console.log("TRACK ERROR:", err.message);
+        console.error("PUPPETEER ERROR:", err.message);
 
         return {
             ok: false,
-            error: "Сервис временно недоступен"
+            error: "Ошибка парсинга страницы"
         };
+
+    } finally {
+        if (browser) await browser.close();
     }
-}
-
-// ================= FORMAT =================
-function formatResult(data, tracking) {
-    if (!data.ok) {
-        return `❌ ${tracking}\n${data.error}`;
-    }
-
-    let msg = `📦 Poczta Polska\n`;
-    msg += `🔢 ${data.number}\n\n`;
-    msg += `🚚 Статус: ${data.status}\n`;
-
-    if (data.sendDate) {
-        msg += `📅 Отправка: ${data.sendDate.split("T")[0]}\n`;
-    }
-
-    if (data.deliveryDate) {
-        msg += `✅ Доставка: ${data.deliveryDate.split("T")[0]}\n`;
-    }
-
-    msg += `\n📋 События:\n`;
-
-    if (!data.events.length) {
-        msg += "Нет данных";
-    } else {
-        data.events.forEach(e => {
-            msg += `• ${e.name}\n`;
-            if (e.time) msg += `  ⏱ ${e.time.replace("T", " ").slice(0, 16)}\n`;
-            if (e.place) msg += `  📍 ${e.place}\n`;
-        });
-    }
-
-    return msg;
 }
 
 // ================= BOT =================
 bot.start((ctx) => {
-    ctx.reply("📦 Отправь номер посылки Poczta Polska");
+    ctx.reply("📦 Отправь трек-номер Poczta Polska");
 });
 
 bot.on("text", async (ctx) => {
-    const tracking = ctx.message.text.trim();
+    const track = ctx.message.text.trim();
 
-    await ctx.reply("🔍 Проверяю...");
+    await ctx.reply("🔍 Проверяю через сайт...");
 
-    try {
-        const data = await trackPocztaPolska(tracking);
-        const msg = formatResult(data, tracking);
+    const result = await trackPocztaPolska(track);
 
-        await ctx.reply(msg);
-
-    } catch (err) {
-        console.error("BOT ERROR:", err.message);
-        await ctx.reply("⚠️ Ошибка сервера, попробуй позже");
+    if (!result.ok) {
+        return ctx.reply("❌ " + result.error);
     }
+
+    ctx.reply("📦 Результат:\n\n" + result.text);
 });
 
-// ================= SAFE LAUNCH =================
+// ================= LAUNCH =================
 bot.launch({
     dropPendingUpdates: true
 });
 
 console.log("BOT STARTED");
 
-// ================= GRACEFUL STOP =================
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
