@@ -1,5 +1,5 @@
 {
-  "name": "telegram-echo-bot",
+  "name": "tg-bot",
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
