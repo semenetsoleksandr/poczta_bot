@@ -1,12 +1,12 @@
 {
-  "name": "poczta-bot",
+  "name": "poczta-puppeteer-bot",
   "version": "1.0.0",
-  "main": "index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "telegraf": "^4.16.3"
+    "telegraf": "^4.16.3",
+    "puppeteer": "^22.0.0"
   }
 }
