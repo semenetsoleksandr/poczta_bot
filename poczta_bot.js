@@ -1,90 +1,27 @@
-const { Telegraf } = require("telegraf");
-const puppeteer = require("puppeteer");
+import { Telegraf } from 'telegraf';
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// Получаем токен из переменных окружения Railway
+const BOT_TOKEN = process.env.BOT_TOKEN;
 
-// ================= TRACKING =================
-async function trackPocztaPolska(trackingNumber) {
-    let browser;
-
-    try {
-        browser = await puppeteer.launch({
-            headless: "new",
-            args: [
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage"
-            ]
-        });
-
-        const page = await browser.newPage();
-
-        await page.setUserAgent(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-        );
-
-        await page.goto(
-            "https://emonitoring.poczta-polska.pl/",
-            { waitUntil: "networkidle2" }
-        );
-
-        // ввод трека
-        await page.type("input", trackingNumber);
-
-        // нажимаем кнопку поиска
-        await page.click("button");
-
-        await page.waitForTimeout(4000);
-
-        // читаем результат
-        const result = await page.evaluate(() => {
-            const status = document.body.innerText;
-            return status;
-        });
-
-        return {
-            ok: true,
-            text: result.slice(0, 1500)
-        };
-
-    } catch (err) {
-        console.error("PUPPETEER ERROR:", err.message);
-
-        return {
-            ok: false,
-            error: "Ошибка парсинга страницы"
-        };
-
-    } finally {
-        if (browser) await browser.close();
-    }
+if (!BOT_TOKEN) {
+  console.error('Ошибка: Переменная окружения BOT_TOKEN не задана!');
+  process.exit(1);
 }
 
-// ================= BOT =================
-bot.start((ctx) => {
-    ctx.reply("📦 Отправь трек-номер Poczta Polska");
+const bot = new Telegraf(BOT_TOKEN);
+
+// Слушаем любые текстовые сообщения
+bot.on('text', (ctx) => {
+  // ctx.message.text — это текст от пользователя
+  // ctx.reply — встроенный метод для отправки ответа в тот же чат
+  ctx.reply(ctx.message.text);
 });
 
-bot.on("text", async (ctx) => {
-    const track = ctx.message.text.trim();
+// Запуск бота
+bot.launch()
+  .then(() => console.log('JS Эхо-бот успешно запущен...'))
+  .catch((err) => console.error('Ошибка запуска бота:', err));
 
-    await ctx.reply("🔍 Проверяю через сайт...");
-
-    const result = await trackPocztaPolska(track);
-
-    if (!result.ok) {
-        return ctx.reply("❌ " + result.error);
-    }
-
-    ctx.reply("📦 Результат:\n\n" + result.text);
-});
-
-// ================= LAUNCH =================
-bot.launch({
-    dropPendingUpdates: true
-});
-
-console.log("BOT STARTED");
-
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+// Правильная остановка бота при выключении контейнера на Railway
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
